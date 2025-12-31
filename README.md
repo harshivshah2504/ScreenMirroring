@@ -8,6 +8,12 @@
 - **Simple Setup**: Scan a QR code to connect.
 - **Multiple Sources**: Share your screen or camera.
 
+## Direct P2P Connection
+Mirror relies on a **direct peer-to-peer (P2P)** connection between the sender and receiver.
+- **Privacy**: Video data is encrypted and transferred directly between devices on your local network. It does not go through the internet or any cloud server.
+- **Performance**: By keeping data on the LAN, Mirror achieves very low latency and high quality, limited only by your Wi-Fi speed.
+- **Mobile Hotspot**: If you don't have a Wi-Fi router, you can create a **Mobile Hotspot** on one device and connect the other to it. This creates a direct link for maximum performance.
+
 ## Prerequisites
 Before you begin, ensure you have the following installed:
 - **C++17** compiler (GCC/Clang/MSVC)
