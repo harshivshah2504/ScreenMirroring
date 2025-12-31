@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mirror - Sender</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; }
+        #status { margin-bottom: 20px; font-weight: bold; }
+        button { font-size: 1.2em; padding: 10px 20px; cursor: pointer; margin: 10px; }
+        .btn-group { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        @media (min-width: 600px) {
+            .btn-group { flex-direction: row; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Mirror Sender</h1>
+    <div id="status">Ready</div>
+    <div id="session-info" style="font-size:0.8em; color:#888;"></div>
+    
+    <div class="btn-group">
+        <button id="btn-connect" onclick="connectWS()">1. Connect Server</button>
+        <button id="btn-screen" onclick="startSharing('screen')" disabled>2. Share Screen</button>
+        <button id="btn-camera" onclick="startSharing('camera')" disabled>2. Share Camera</button>
+        <button id="btn-ping" onclick="sendPing()" disabled>3. Test Ping</button>
+    </div>
+
+    <div id="settings" style="margin-top: 20px; border: 1px solid #ccc; padding: 10px; display: inline-block; border-radius: 8px;">
+        <h3>Settings</h3>
+        <label>Resolution:</label>
+        <select id="sel-res">
+            <option value="720" selected>720p (HD)</option>
+            <option value="1080">1080p (FHD)</option>
+            <option value="480">480p (SD)</option>
+        </select>
+        <br><br>
+        <label>Frame Rate:</label>
+        <select id="sel-fps">
+            <option value="30" selected>30 FPS</option>
+            <option value="60">60 FPS</option>
+            <option value="15">15 FPS</option>
+        </select>
+        <br><br>
+        <label>Max Bitrate (Mbps):</label>
+        <input type="number" id="inp-bitrate" value="2.5" step="0.5" style="width: 60px;">
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const urlParams = new URLSearchParams(window.location.search);
+        const sessionId = urlParams.get('session');
+
+        let pc;
+        let ws;
+        let stream;
+        const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+        if (!sessionId) {
+            statusEl.innerText = "Error: No Session ID.";
+        }
+        
+        function connectWS() {
+             statusEl.innerText = "Connecting WS...";
+             const host = window.location.host;
+             const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+             const wsUrl = `${protocol}://${host}/ws?id=${sessionId}&role=sender`;
+             console.log("Connecting to:", wsUrl);
+             
+             ws = new WebSocket(wsUrl);
+             
+             ws.onopen = () => {
+                 statusEl.innerText = "WS Connected! Now share media.";
+                 console.log("WS Open");
+                 document.getElementById('btn-screen').disabled = false;
+                 document.getElementById('btn-camera').disabled = false;
+                 document.getElementById('btn-ping').disabled = false;
+                 document.getElementById('btn-connect').disabled = true;
+             };
+             
+             ws.onclose = () => {
+                 statusEl.innerText = "WS Closed (Signaling only). Video persists.";
+                 console.log("WS Closed");
+             };
+             
+             ws.onmessage = async (msg) => {
+                 console.log("RX:", msg.data);
+                 const data = JSON.parse(msg.data);
+                 if (data.type === 'answer') {
+                      statusEl.innerText += "\nGot Answer. Finalizing...";
+                      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                 } else if (data.type === 'ice') {
+                      if (pc) await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                 }
+             };
+        }
+
+        async function startSharing(mode) {
+            try {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    alert("Must connect to server first!");
+                    return;
+                }
+                
+                statusEl.innerText = "Requesting Media...";
+
+                const resHeight = parseInt(document.getElementById('sel-res').value);
+                const fps = parseInt(document.getElementById('sel-fps').value);
+                
+                const constraints = {
+                    video: {
+                        height: { ideal: resHeight },
+                        frameRate: { ideal: fps, max: fps }
+                    },
+                    audio: false
+                };
+
+                if (mode === 'screen') {
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+                         throw new Error("Screen sharing not supported on this device/browser.");
+                    }
+                    constraints.video.cursor = "always";
+                    stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+                } else {
+                    constraints.video.facingMode = "environment";
+                    constraints.audio = true;
+                    stream = await navigator.mediaDevices.getUserMedia(constraints);
+                }
+
+                statusEl.innerText = "Captured. Starting WebRTC...";
+                disableButtons();
+
+                await setupPeerConnection();
+
+            } catch (err) {
+                console.error(err);
+                statusEl.innerText = "Error: " + err.message;
+                enableButtons();
+            }
+        }
+
+        function disableButtons() {
+            document.querySelectorAll('button').forEach(b => b.disabled = true);
+        }
+        
+        function enableButtons() {
+             document.querySelectorAll('button').forEach(b => b.disabled = false);
+        }
+
+        async function setupPeerConnection() {
+            pc = new RTCPeerConnection(config);
+            
+            stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+            try {
+                const bitrateMbps = parseFloat(document.getElementById('inp-bitrate').value);
+                if (bitrateMbps && bitrateMbps > 0) {
+                    const bandwidth = bitrateMbps * 1000 * 1000;
+                    const transceivers = pc.getTransceivers();
+                    transceivers.forEach(transceiver => {
+                        if (transceiver.sender.track && transceiver.sender.track.kind === 'video') {
+                            const params = transceiver.sender.getParameters();
+                            if (!params.encodings) params.encodings = [{}];
+                            params.encodings[0].maxBitrate = bandwidth;
+                            transceiver.sender.setParameters(params).then(()=>console.log("Bitrate restricted to " + bitrateMbps + "Mbps"))
+                                .catch(e => console.warn("Bitrate Limit Failed:", e));
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error("Bitrate logic error:", e);
+            }
+
+            try {
+                const transceivers = pc.getTransceivers();
+                transceivers.forEach(transceiver => {
+                    if (transceiver.sender.track && transceiver.sender.track.kind === 'video') {
+                        const capabilities = RTCRtpSender.getCapabilities('video');
+                        if (capabilities) {
+                            const h264Codecs = capabilities.codecs.filter(c => 
+                                c.mimeType === 'video/H264' && 
+                                (c.sdpFmtpLine || "").includes("packetization-mode=1")
+                            );
+                            const otherCodecs = capabilities.codecs.filter(c => c.mimeType !== 'video/H264');
+                            
+                            if (h264Codecs.length > 0) {
+                                console.log("Forcing H.264 Preference");
+                                transceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
+                            }
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Codec pref error:", e);
+            }
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                     const ip = event.candidate.candidate.split(" ")[4];
+                     statusEl.innerText += `\nICE Gen: ${ip}`;
+                     console.log("Candidate:", ip);
+
+                    ws.send(JSON.stringify({
+                        type: 'ice',
+                        candidate: event.candidate
+                    }));
+                }
+            };
+            
+            pc.onconnectionstatechange = () => {
+                 statusEl.innerText = `ICE State: ${pc.connectionState}`;
+                 console.log("ICE State:", pc.connectionState);
+            };
+            stream.getVideoTracks()[0].onended = () => {
+                statusEl.innerText = "Sharing stopped by user.";
+                if(ws) ws.close();
+                if(pc) pc.close();
+                enableButtons();
+            };
+
+            createOffer();
+        }
+
+        async function createOffer() {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            ws.send(JSON.stringify({
+                type: 'offer',
+                sdp: offer
+            }));
+            
+            statusEl.innerText = "Offer sent (720p). Waiting for Answer...";
+        }
+
+        function sendPing() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping', msg: 'Hello from Phone' }));
+                statusEl.innerText = "Ping sent!";
+            } else {
+                 statusEl.innerText = "WS not connected.";
+            }
+        }
+        
+        if(sessionId) document.getElementById('session-info').innerText = "Session: " + sessionId;
+    </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.10)
+project(MirrorServer)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Boost REQUIRED COMPONENTS system thread)
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found via cmake, assuming it is in include path or handled later.")
+endif()
+
+add_executable(mirror_server server/main.cpp)
+target_include_directories(mirror_server PRIVATE ${Boost_INCLUDE_DIRS})
+target_link_libraries(mirror_server PRIVATE ${Boost_LIBRARIES} pthread)
+if(TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(mirror_server PRIVATE nlohmann_json::nlohmann_json)
+endif()

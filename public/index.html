@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mirror - Receiver</title>
+    <style>
+      body {
+        background: #000;
+        color: #fff;
+        font-family: sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        overflow: hidden;
+      }
+      #video-container {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      video {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      #status {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 10px;
+        border-radius: 8px;
+        z-index: 9999;
+        pointer-events: none;
+      }
+      #qr-container {
+        text-align: center;
+      }
+      #link {
+        font-size: 1.5em;
+        margin-top: 20px;
+        color: #4af;
+        text-decoration: none;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">Connecting...</div>
+
+    <div id="qr-container">
+      <h1>Scan to Cast</h1>
+      <img
+        id="qr-img"
+        src=""
+        alt="QR Code"
+        style="
+          display: none;
+          background: white;
+          padding: 10px;
+          border-radius: 10px;
+        "
+      />
+      <br />
+      <a id="link" href="#">Loading...</a>
+    </div>
+
+    <div id="video-container" style="display: none">
+      <video id="remoteVideo" autoplay playsinline controls muted></video>
+    </div>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const qrContainer = document.getElementById("qr-container");
+      const videoContainer = document.getElementById("video-container");
+      const remoteVideo = document.getElementById("remoteVideo");
+      const linkEl = document.getElementById("link");
+      const qrImg = document.getElementById("qr-img");
+
+      let pc;
+      let ws;
+      const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+      async function start() {
+        try {
+          const res = await fetch("/create");
+          const data = await res.json();
+          const sessionId = data.session_id;
+
+          statusEl.innerText = `Session: ${sessionId}`;
+
+          const host = window.location.host;
+          const sendUrl = `http://${host}/send.html?session=${sessionId}`;
+
+          linkEl.href = sendUrl;
+          linkEl.innerText = sendUrl;
+          qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(
+            sendUrl
+          )}`;
+          qrImg.style.display = "inline-block";
+
+          const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+          ws = new WebSocket(
+            `${protocol}://${host}/ws?id=${sessionId}&role=receiver`
+          );
+
+          ws.onopen = () => {
+            statusEl.innerText += " | WS Connected";
+          };
+
+          ws.onmessage = async (msg) => {
+            const data = JSON.parse(msg.data);
+
+            if (data.type === "offer") {
+              console.log("RX Offer");
+              statusEl.innerText = "Received Offer. Signaling...";
+              qrContainer.style.display = "none";
+              videoContainer.style.display = "flex";
+
+              setupPeerConnection();
+              await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+
+              ws.send(JSON.stringify({
+                  type: "answer",
+                  sdp: answer,
+              }));
+              statusEl.innerText = "Sent Answer. Waiting for ICE...";
+
+            } else if (data.type === "ice") {
+              if (pc) {
+                await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+              }
+            }
+          };
+        } catch (err) {
+          console.error(err);
+          statusEl.innerText = "Error: " + err.message;
+        }
+      }
+
+      function setupPeerConnection() {
+        pc = new RTCPeerConnection(config);
+
+        pc.ontrack = (event) => {
+          remoteVideo.srcObject = event.streams[0];
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            ws.send(
+              JSON.stringify({
+                type: "ice",
+                candidate: event.candidate,
+              })
+            );
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          statusEl.innerText = `Connection: ${pc.connectionState}`;
+        };
+      }
+
+      start();
+    </script>
+  </body>
+</html>
